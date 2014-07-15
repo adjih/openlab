@@ -48,7 +48,7 @@ void init_sniffer(uint8_t channel)
 
 static void sniff_rx(phy_status_t status)
 {
-uint32_t packet_counter = 0;
+    uint32_t packet_counter = 0;
     log_debug("status: %u", status);
 /* magic | type | len | pkt | crc | crc_ok | rssi | lqi | timestamp */
     static uint8_t data[256] = {
