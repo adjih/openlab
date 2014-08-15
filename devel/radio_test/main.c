@@ -74,24 +74,49 @@ static void configure_radio(handler_arg_t arg)
 
 /*---------------------------------------------------------------------------*/
 
+#define MAGIC 0xCEADu
+
+// bad checksum (to complement CRC)
+uint16_t my_checksum(uint8_t* data, uint16_t size)
+{
+  uint16_t result = 0;
+  if ((size & 0x1) != 0) {
+    result += data[size-1];
+    size --;
+  }
+
+  size = size/2;
+  int i;
+  for (i=0; i<size;i++) {
+    uint16_t value = 0;
+    memcpy(&value, data+2*i, sizeof(uint16_t));
+    result += (value);
+  }
+  return result;
+}
+
+/*---------------------------------------------------------------------------*/
+
 //#define MAX_RECV_PACKET 1024
 #define MAX_RECV_PACKET 1048
 
 typedef struct {
   uint8_t lqi;
-  uint8_t rssi;
+  int8_t rssi;
   uint16_t seq_num;
   uint32_t timestamp;
   uint32_t eop_time;
 } recv_info_t;
 
-#define SEQ_NUM_ERROR 0xffffu
+#define SEQ_NUM_CHECKSUM_ERROR 0xfffeu
+#define SEQ_NUM_CRC_ERROR 0xffffu
 
 typedef struct {
   uint32_t xmit_id;
   uint16_t packet_size;
   int nb_packet;
   int nb_error;
+  int nb_sum_error;
   int nb_change;
   recv_info_t recv[MAX_RECV_PACKET];
 } recv_logger_t;
@@ -101,18 +126,45 @@ recv_logger_t recv_logger;
 static void recv_logger_init(recv_logger_t* self)
 {
   self->nb_error = 0;
+  self->nb_sum_error = 0;
   self->nb_change = 0;
   self->nb_packet = 0;
 }
 
+static void recv_logger_add_crc_error(recv_logger_t* self,
+				      uint32_t timestamp, uint32_t eop_time,
+				      uint8_t is_checksum)
+{
+  if (self->nb_packet >= MAX_RECV_PACKET) {
+    self->nb_error ++;
+    return;
+  }
+  recv_info_t* recv_info = &self->recv[self->nb_packet];
+  if (is_checksum)
+    recv_info->seq_num = SEQ_NUM_CHECKSUM_ERROR;
+  else recv_info->seq_num = SEQ_NUM_CRC_ERROR;
+  recv_info->rssi = 0;
+  recv_info->lqi = 0;
+  recv_info->timestamp = timestamp;
+  recv_info->eop_time = eop_time;
+  self->nb_packet++;
+}
+
 static void recv_logger_add(recv_logger_t* self,
-			    uint8_t* data, int size, uint8_t rssi, uint8_t lqi,
+			    uint8_t* data, int size, int8_t rssi, uint8_t lqi,
 			    uint32_t timestamp, uint32_t eop_time)
 {
   if (size < 9) {
     self->nb_error++;
     return;
   }
+
+  if (my_checksum(data, size) != MAGIC) {
+    recv_logger_add_crc_error(self, timestamp, eop_time, 1);
+    self->nb_sum_error ++;
+    return;
+  }
+  data += sizeof(uint16_t);
 
 #if 0
   int i;
@@ -167,33 +219,19 @@ static void recv_logger_add(recv_logger_t* self,
 }
 
 
-static void recv_logger_add_crc_error(recv_logger_t* self,
-				      uint32_t timestamp, uint32_t eop_time)
-{
-  if (self->nb_packet >= MAX_RECV_PACKET) {
-    self->nb_error ++;
-    return;
-  }
-  recv_info_t* recv_info = &self->recv[self->nb_packet];
-  recv_info->seq_num = SEQ_NUM_ERROR;
-  recv_info->rssi = 0;
-  recv_info->lqi = 0;
-  recv_info->timestamp = timestamp;
-  recv_info->eop_time = eop_time;
-  self->nb_packet++;
-
-}
 
 static void recv_logger_show(recv_logger_t* self)
 {
-  printf("{'nbPacket':%u,'nbError':%u,'nbChange':%u,'id':%u,'recv':[", 
-	 self->nb_packet, self->nb_error, self->nb_change, self->xmit_id);
+  printf("{'nbPacket':%u,'nbError':%u,'nbSumError':%u,'nbChange':%u,"
+	 "'id':%u,'recv':[", 
+	 self->nb_packet, self->nb_error, self->nb_sum_error, 
+	 self->nb_change, self->xmit_id);
   int i;
   for (i=0; i<self->nb_packet; i++) {
     if (i > 0)
       printf(",");
     recv_info_t* recv_info = &self->recv[i];
-    printf("(%u,%u,%u,%u,%u)", recv_info->seq_num,
+    printf("(%u,%d,%u,%u,%u)", recv_info->seq_num,
 	   recv_info->rssi, recv_info->lqi,
 	   recv_info->timestamp, recv_info->eop_time);
   }
@@ -277,6 +315,8 @@ static int send_one_packet(int num)
     // setup packet
     uint8_t* data = tx_pkt.data;
     uint16_t packet_id = num;
+    memset(data, 0, sizeof(uint16_t));
+    data += sizeof(uint16_t);
     memcpy(data, &conf.xmit_id, sizeof(conf.xmit_id));
     data += sizeof(conf.xmit_id);
     memcpy(data, &packet_id, sizeof(packet_id));
@@ -284,6 +324,12 @@ static int send_one_packet(int num)
     *data = conf.pkt_size;
 
     tx_pkt.length = conf.pkt_size;
+    
+    // update "checksum"
+    uint16_t checksum = MAGIC-(my_checksum(tx_pkt.data, tx_pkt.length));
+    memcpy(tx_pkt.data, &checksum, sizeof(uint16_t));
+    //printf("checksum=%u %u\n", checksum, 
+    //my_checksum(tx_pkt.data, tx_pkt.length));
 
     // get energy
     phy_idle(platform_phy);
@@ -338,7 +384,7 @@ static void packet_received(handler_arg_t arg)
 		      rx_pkt.lqi, rx_pkt.timestamp, rx_pkt.eop_time);
     } else if (status == PHY_RX_CRC_ERROR) {
       recv_logger_add_crc_error(&recv_logger, 
-				rx_pkt.timestamp, rx_pkt.eop_time);
+				rx_pkt.timestamp, rx_pkt.eop_time, 0);
     } else {
       printf("radio_rx_error 0x%x\n", status);
       //recv_info_list_radio_error(status);
