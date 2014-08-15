@@ -155,6 +155,9 @@ add_subdirectory(platform/${PLATFORM})
 # Build the appli directory
 add_subdirectory(appli)
 
+# Build the appli directory
+add_subdirectory(devel)
+
 ##
 ## CTest / CDash
 ##
