@@ -13,6 +13,7 @@
 #include "platform.h"
 #include "queue.h"
 #include "unique_id.h"
+#include "crc.h"
 
 #define COMMAND_LEN (256)
 enum mode_t { MODE_TX, MODE_RX };
@@ -76,6 +77,7 @@ static void configure_radio(handler_arg_t arg)
 
 #define MAGIC 0xCEADu
 
+#ifdef WITH_CHECKSUM
 // bad checksum (to complement CRC)
 uint16_t my_checksum(uint8_t* data, uint16_t size)
 {
@@ -94,6 +96,7 @@ uint16_t my_checksum(uint8_t* data, uint16_t size)
   }
   return result;
 }
+#endif
 
 /*---------------------------------------------------------------------------*/
 
@@ -159,12 +162,23 @@ static void recv_logger_add(recv_logger_t* self,
     return;
   }
 
+#ifdef WITH_CHECKSUM
   if (my_checksum(data, size) != MAGIC) {
     recv_logger_add_crc_error(self, timestamp, eop_time, 1);
     self->nb_sum_error ++;
     return;
   }
   data += sizeof(uint16_t);
+#else
+  uint16_t magic;
+  memcpy(&magic, data, sizeof(magic));
+  if (magic != MAGIC) {
+    recv_logger_add_crc_error(self, timestamp, eop_time, 1);
+    self->nb_sum_error ++;
+    return;
+  }
+  data += sizeof(magic);
+#endif
 
 #if 0
   int i;
@@ -325,11 +339,16 @@ static int send_one_packet(int num)
 
     tx_pkt.length = conf.pkt_size;
     
+#ifdef WITH_CHECKSUM
     // update "checksum"
     uint16_t checksum = MAGIC-(my_checksum(tx_pkt.data, tx_pkt.length));
     memcpy(tx_pkt.data, &checksum, sizeof(uint16_t));
     //printf("checksum=%u %u\n", checksum, 
     //my_checksum(tx_pkt.data, tx_pkt.length));
+#else
+    uint16_t checksum = MAGIC;
+    memcpy(tx_pkt.data, &checksum, sizeof(uint16_t));
+#endif
 
     // get energy
     phy_idle(platform_phy);
