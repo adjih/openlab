@@ -110,6 +110,7 @@ static uint32_t get_crc32(uint8_t* data, unsigned int size)
     log_error("too much data");
     HALT();
   }
+  memcpy(tmp_data, data, size);
   crc_compute(tmp_data, (size+3)/4);
   return crc_terminate();
 
@@ -148,6 +149,7 @@ typedef struct {
   uint32_t eop_time;
 } recv_info_t;
 
+#define XMIT_ID_NONE 0
 #define SEQ_NUM_OFFSET_ERROR 0xff00u
 
 typedef struct {
@@ -176,6 +178,7 @@ static void recv_logger_init(recv_logger_t* self)
   self->nb_crc32_error = 0;
   self->nb_locked_error = 0;
   self->locked = 0;
+  self->xmit_id = XMIT_ID_NONE;
 }
 
 static void recv_logger_add_error(recv_logger_t* self,
@@ -261,7 +264,7 @@ static void recv_logger_add(recv_logger_t* self,
     return;
   }
     
-  if (self->nb_packet >= 1) {
+  if (self->xmit_id != XMIT_ID_NONE) {
     if (self->xmit_id != xmit_id) {
       self->nb_change += 1;
       self->nb_packet = 0;
@@ -425,8 +428,17 @@ static int send_one_packet(int num)
     data += sizeof(packet_id);
     *data = conf.pkt_size;
 
-    value_crc32 = get_crc32(data, conf.pkt_size);
+    value_crc32 = get_crc32(tx_pkt.data, conf.pkt_size);
     memcpy(data_crc32_field, &value_crc32, sizeof(value_crc32));
+
+#ifdef CHECK_CORRUPTION
+    /* check if crc32 catches packet corruption */
+    if (num%10 == 0)
+      tx_pkt.data[conf.pkt_size-1] ^= 0xfau;
+    //printf("crc32: %u\n", value_crc32);
+    value_crc32 = get_crc32(tx_pkt.data, conf.pkt_size);
+    //printf("->  crc32: %u\n", value_crc32);
+#endif
 
     tx_pkt.length = conf.pkt_size;
 
@@ -618,7 +630,8 @@ static void parse_command_task(void *param)
 	    //printf("txpower=%d ret=%d args='%s' fmt='%s'\n", 
 	    //conf.tx_power, ret, args, SCNu32);
 
-            valid_command = ((5 == ret) && (conf.tx_power != 255));
+            valid_command = ((5 == ret) && (conf.tx_power != 255)
+			     && (conf.xmit_id != XMIT_ID_NONE));
 
             event_post(EVENT_QUEUE_APPLI, send_packets, (handler_arg_t)
                     (valid_command ? 0 : 1));
