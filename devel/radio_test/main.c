@@ -14,6 +14,7 @@
 #include "queue.h"
 #include "unique_id.h"
 #include "crc.h"
+#include "debug.h"
 
 #define COMMAND_LEN (256)
 enum mode_t { MODE_TX, MODE_RX };
@@ -77,7 +78,7 @@ static void configure_radio(handler_arg_t arg)
 
 #define MAGIC 0xCEADu
 
-#ifdef WITH_CHECKSUM
+#ifdef __NOT_USED_WITH_CHECKSUM
 // bad checksum (to complement CRC)
 uint16_t my_checksum(uint8_t* data, uint16_t size)
 {
@@ -98,6 +99,42 @@ uint16_t my_checksum(uint8_t* data, uint16_t size)
 }
 #endif
 
+// XXX: not thread safe (should be ok for this prog.)
+static uint32_t get_crc32(uint8_t* data, unsigned int size)
+{
+  crc_reset();
+
+  static uint32_t tmp_data[32];
+  memset(tmp_data, 0, sizeof(tmp_data));
+  if (size > sizeof(tmp_data)) {
+    log_error("too much data");
+    HALT();
+  }
+  crc_compute(tmp_data, (size+3)/4);
+  return crc_terminate();
+
+#if 0
+  uint32_t data_ptr_value = (uint32_t)data;
+  if ((data_ptr_value & 0x3) != 0) { // hack
+    log_error("data ptr or content is not 32-bit aligned");
+    HALT();
+  }
+
+  uint32_t* data32 = (uint32_t*)data_ptr_value;
+  unsigned int size32 = size/sizeof(uint32_t);
+  crc_compute(data32, size32); 
+
+  unsigned int size_added = size32*sizeof(uint32_t);
+  if (size_added != size) {
+    uint32_t remainder = 0;
+    memcpy(&remainder, data + size_added, size - size_added);
+    crc_compute(&remainder, 1);
+  }
+
+  return crc_terminate();
+#endif  
+}
+
 /*---------------------------------------------------------------------------*/
 
 //#define MAX_RECV_PACKET 1024
@@ -111,16 +148,20 @@ typedef struct {
   uint32_t eop_time;
 } recv_info_t;
 
-#define SEQ_NUM_CHECKSUM_ERROR 0xfffeu
-#define SEQ_NUM_CRC_ERROR 0xffffu
+#define SEQ_NUM_OFFSET_ERROR 0xff00u
 
 typedef struct {
   uint32_t xmit_id;
   uint16_t packet_size;
+
   int nb_packet;
-  int nb_error;
-  int nb_sum_error;
   int nb_change;
+  int nb_error;
+  int nb_magic_error;
+  int nb_crc32_error;
+  int nb_locked_error;
+
+  uint8_t locked;
   recv_info_t recv[MAX_RECV_PACKET];
 } recv_logger_t;
 
@@ -128,24 +169,32 @@ recv_logger_t recv_logger;
 
 static void recv_logger_init(recv_logger_t* self)
 {
-  self->nb_error = 0;
-  self->nb_sum_error = 0;
-  self->nb_change = 0;
   self->nb_packet = 0;
+  self->nb_change = 0;
+  self->nb_error = 0;
+  self->nb_magic_error = 0;
+  self->nb_crc32_error = 0;
+  self->nb_locked_error = 0;
+  self->locked = 0;
 }
 
-static void recv_logger_add_crc_error(recv_logger_t* self,
-				      uint32_t timestamp, uint32_t eop_time,
-				      uint8_t is_checksum)
+static void recv_logger_add_error(recv_logger_t* self,
+				  uint32_t timestamp, uint32_t eop_time,
+				  uint32_t error_type)
 {
+  if (self->locked) {
+    self->nb_locked_error++;
+    return;
+  }
+
   if (self->nb_packet >= MAX_RECV_PACKET) {
-    self->nb_error ++;
+    self->nb_error++;
     return;
   }
   recv_info_t* recv_info = &self->recv[self->nb_packet];
-  if (is_checksum)
-    recv_info->seq_num = SEQ_NUM_CHECKSUM_ERROR;
-  else recv_info->seq_num = SEQ_NUM_CRC_ERROR;
+
+  recv_info->seq_num = SEQ_NUM_OFFSET_ERROR+error_type;
+
   recv_info->rssi = 0;
   recv_info->lqi = 0;
   recv_info->timestamp = timestamp;
@@ -157,28 +206,37 @@ static void recv_logger_add(recv_logger_t* self,
 			    uint8_t* data, int size, int8_t rssi, uint8_t lqi,
 			    uint32_t timestamp, uint32_t eop_time)
 {
+  if (self->locked) {
+    self->nb_locked_error ++;
+    return;
+  }
+  
   if (size < 9) {
     self->nb_error++;
     return;
   }
 
-#ifdef WITH_CHECKSUM
-  if (my_checksum(data, size) != MAGIC) {
-    recv_logger_add_crc_error(self, timestamp, eop_time, 1);
-    self->nb_sum_error ++;
-    return;
-  }
-  data += sizeof(uint16_t);
-#else
+  uint8_t* initial_data = data;
+
   uint16_t magic;
   memcpy(&magic, data, sizeof(magic));
   if (magic != MAGIC) {
-    recv_logger_add_crc_error(self, timestamp, eop_time, 1);
-    self->nb_sum_error ++;
+    recv_logger_add_error(self, timestamp, eop_time, 'M');
+    self->nb_magic_error ++;
     return;
   }
   data += sizeof(magic);
-#endif
+
+  uint32_t value_crc32;
+  memcpy(&value_crc32, data, sizeof(value_crc32));
+  memset(data, 0, sizeof(value_crc32));
+  uint32_t actual_crc32 = get_crc32(initial_data, size);
+  if (value_crc32 != actual_crc32) {
+    recv_logger_add_error(self, timestamp, eop_time, '3');
+    self->nb_crc32_error ++;
+    return;
+  }
+  data += sizeof(value_crc32);
 
 #if 0
   int i;
@@ -236,9 +294,13 @@ static void recv_logger_add(recv_logger_t* self,
 
 static void recv_logger_show(recv_logger_t* self)
 {
-  printf("{'nbPacket':%u,'nbError':%u,'nbSumError':%u,'nbChange':%u,"
+  printf("{'nbPacket':%u,'nbError':%u,'nbMagicError':%u,"
+	 "'nbCrc32Error':%u,"
+	 "'nbLockedError':%u,"
+	 "'nbChange':%u,"
 	 "'id':%u,'recv':[", 
-	 self->nb_packet, self->nb_error, self->nb_sum_error, 
+	 self->nb_packet, self->nb_error, self->nb_magic_error, 
+	 self->nb_crc32_error, self->nb_locked_error,
 	 self->nb_change, self->xmit_id);
   int i;
   for (i=0; i<self->nb_packet; i++) {
@@ -328,28 +390,48 @@ static int send_one_packet(int num)
 
     // setup packet
     uint8_t* data = tx_pkt.data;
-    uint16_t packet_id = num;
-    memset(data, 0, sizeof(uint16_t));
+
+#if 0
+    // XXX:TODO: true 802.15.4 frame format
+    static uint16_t frame_seq_num = 0;
+    data[0] = 0x41;
+    data[1] = 0x88;
+    data[2] = frame_seq_num++;
+    data[3] = 0xcd;
+    data[4] = 0xab;
+    data[5] = 0xff;
+    data[6] = 0xff;
+    data[7] = hip_get_node_id() & 0xff;
+    data[8] = hip_get_node_id() >> 8;
+    data += 9;
+#endif
+
+    memset(data, num, conf.pkt_size); // fill first (overwrite header below)
+
+    uint16_t magic = MAGIC;
+    memcpy(data, &magic, sizeof(magic));
     data += sizeof(uint16_t);
+
+    uint32_t value_crc32 = 0;
+    uint8_t* data_crc32_field = data;
+    memcpy(data, &value_crc32, sizeof(value_crc32));
+    data += sizeof(uint32_t);
+
+    uint16_t packet_id = num;
     memcpy(data, &conf.xmit_id, sizeof(conf.xmit_id));
     data += sizeof(conf.xmit_id);
+
     memcpy(data, &packet_id, sizeof(packet_id));
     data += sizeof(packet_id);
     *data = conf.pkt_size;
 
-    tx_pkt.length = conf.pkt_size;
-    
-#ifdef WITH_CHECKSUM
-    // update "checksum"
-    uint16_t checksum = MAGIC-(my_checksum(tx_pkt.data, tx_pkt.length));
-    memcpy(tx_pkt.data, &checksum, sizeof(uint16_t));
-    //printf("checksum=%u %u\n", checksum, 
-    //my_checksum(tx_pkt.data, tx_pkt.length));
-#else
-    uint16_t checksum = MAGIC;
-    memcpy(tx_pkt.data, &checksum, sizeof(uint16_t));
-#endif
+    value_crc32 = get_crc32(data, conf.pkt_size);
+    memcpy(data_crc32_field, &value_crc32, sizeof(value_crc32));
 
+    tx_pkt.length = conf.pkt_size;
+
+    //--------------------------------------------------
+    
     // get energy
     phy_idle(platform_phy);
     phy_status_t status = phy_ed(platform_phy, &send_table[num].energy);
@@ -402,8 +484,13 @@ static void packet_received(handler_arg_t arg)
       recv_logger_add(&recv_logger, rx_pkt.data, rx_pkt.length, rx_pkt.rssi, 
 		      rx_pkt.lqi, rx_pkt.timestamp, rx_pkt.eop_time);
     } else if (status == PHY_RX_CRC_ERROR) {
-      recv_logger_add_crc_error(&recv_logger, 
-				rx_pkt.timestamp, rx_pkt.eop_time, 0);
+      // from driver: timestamp/eop_time should be filled
+      recv_logger_add_error(&recv_logger, 
+			    rx_pkt.timestamp, rx_pkt.eop_time, 'C');
+    } else if (status == PHY_RX_LENGTH_ERROR) {
+      // from driver: timestamp/eop_time should be filled
+      recv_logger_add_error(&recv_logger, 
+			    rx_pkt.timestamp, rx_pkt.eop_time, 'L');
     } else {
       printf("radio_rx_error 0x%x\n", status);
       //recv_info_list_radio_error(status);
@@ -570,6 +657,11 @@ static void parse_command_task(void *param)
 
 	  recv_logger_show(&recv_logger);
 
+	} else if (strcmp("lock", cmd) == 0) {
+
+	  recv_logger.locked = 1;
+	  printf("lock ACK %u\n", soft_timer_time());
+
         } else {
             printf("invalid_command\n");
             continue;
@@ -603,6 +695,7 @@ int main(void) {
     /* Setup the hardware. */
     platform_init();
     soft_timer_init();
+    crc_enable();
 
     cmd_queue      = xQueueCreate(2, 256);  // command queue
     radio_tx_queue = xQueueCreate(8, sizeof(int));
