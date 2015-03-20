@@ -53,6 +53,14 @@ endif(NOT EXISTS "${PROJECT_SOURCE_DIR}/platform/${PLATFORM}/include.cmake")
 set(EXECUTABLE_OUTPUT_PATH "${PROJECT_BINARY_DIR}/bin")
 set(LIBRARY_OUTPUT_PATH    "${PROJECT_BINARY_DIR}/libout")
 
+# Set RELEASE flag if variable set
+# Set before adding platform include.cmake as compilation depends on RELEASE
+if(DEFINED RELEASE)
+	set(MY_C_FLAGS "${MY_C_FLAGS} -DRELEASE=${RELEASE}")
+else(DEFINED RELEASE)
+    set(RELEASE 0)
+endif(DEFINED RELEASE)
+
 # Include the platform specific variables
 include(${PROJECT_SOURCE_DIR}/platform/${PLATFORM}/include.cmake)
 
@@ -60,13 +68,6 @@ include(${PROJECT_SOURCE_DIR}/platform/${PLATFORM}/include.cmake)
 if(NOT DEFINED OPT)
 	set(OPT "s")
 endif(NOT DEFINED OPT)
-
-# Set RELEASE flag if variable set
-if(DEFINED RELEASE)
-	set(MY_C_FLAGS "${MY_C_FLAGS} -DRELEASE=${RELEASE}")
-else(DEFINED RELEASE)
-    set(RELEASE 0)
-endif(DEFINED RELEASE)
 
 # Set the DEBUG flag if variable set
 if(DEFINED DEBUG)

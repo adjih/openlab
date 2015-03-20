@@ -192,9 +192,11 @@ int main() {
   printf("Waiting time message from A8\n");
   uart_set_rx_handler(uart_print, char_rx,NULL);
 
+#if 0 
   while(A8comState!=TIMEOK){
     asm volatile ("nop");
   }
+#endif
   printf("Got time from A8 : %us\n",seconds);
   // Init cycle counter
   *SCB_DEMCR = *SCB_DEMCR | 0x01000000;
