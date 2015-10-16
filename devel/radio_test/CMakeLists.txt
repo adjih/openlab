@@ -6,8 +6,8 @@ include_directories(
 
 
 # Build for open nodes M3
-if (PLATFORM STREQUAL "iotlab-m3")
+#if (PLATFORM STREQUAL "iotlab-m3")
     add_executable(radio_test main)
     target_link_libraries(radio_test platform)
-endif (PLATFORM STREQUAL "iotlab-m3")
+#endif (PLATFORM STREQUAL "iotlab-m3")
 
