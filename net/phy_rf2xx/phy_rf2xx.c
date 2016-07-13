@@ -1550,9 +1550,22 @@ static void handle_irq(handler_arg_t arg)
 
 // ************************** Interrupt Routines ************************** //
 
+volatile unsigned int phy_last_timer_low = 0;
+volatile unsigned int phy_last_timer_high = 0;
+
+#define TIM2_BASE 0x40000000ul
+#define TIM4_BASE 0x40000800ul
+#define TIM_CNT_OFFSET 0x24
+
+#define TIM2_COUNTER (*((volatile uint16_t*)(TIM2_BASE+TIM_CNT_OFFSET)))
+#define TIM4_COUNTER (*((volatile uint16_t*)(TIM4_BASE+TIM_CNT_OFFSET)))
+
 /* Those are called from interrupt service routines */
 static void dig2_capture_handler(handler_arg_t arg, uint16_t timer_value)
 {
+    phy_last_timer_low = TIM2_COUNTER;
+    phy_last_timer_high = TIM4_COUNTER;
+
     // Cast to PHY
     phy_rf2xx_t *_phy = arg;
 
@@ -1636,8 +1649,12 @@ static void rx_timeout_handler(handler_arg_t arg, uint16_t timer_value)
     event_post_from_isr(EVENT_QUEUE_NETWORK, handle_rx_timeout, arg);
 }
 
+
 static void irq_handler(handler_arg_t arg)
 {
+  //phy_last_timer_low = TIM2_COUNTER;
+  //phy_last_timer_high = TIM4_COUNTER;
+
     // Cast to PHY
     phy_rf2xx_t *_phy = arg;
 

@@ -21,14 +21,16 @@
 #define CYCLES2NS 1000000000.0/CYCLESPERSEC
 
 #define RADIO_CHANNEL 14
-#define TX_PERIOD soft_timer_ms_to_ticks(2000)
+#define TX_PERIOD soft_timer_ms_to_ticks(9)
 
 /** Software Timer to periodically send a packet */
 static soft_timer_t tx_timer;
 /** Packet for sending */
 static phy_packet_t tx_packet;
+#if 0
 /** Packet for receiving */
 static phy_packet_t rx_packet;
+#endif
 
 /** Counter incremented at each send packet */
 static uint32_t tx_count = 0;
@@ -69,12 +71,13 @@ void PPShandler(handler_arg_t arg) {
   // we recieve this interrupt each second from the GPS PPS
   // we recieve this interrupt each second from the GPS PPS
   // so we increment the number of seconds elapsed from the beginning
-  log_debug("Got PPS\n");
+  //log_debug("Got PPS\n");
   seconds++;
   // and we reset the cycle counter
   *DWT_CYCCNT = 0;
 }
 
+#if 0 
 static void rx_done_isr(phy_status_t status) {
   switch (status) {
     case PHY_SUCCESS:
@@ -88,7 +91,9 @@ static void rx_done_isr(phy_status_t status) {
       break;
     }
 }
+#endif
 
+#if 0
 /** Enter RX state */
 static void enter_rx(handler_arg_t arg) {
   // Set PHY IDLE, then enter RX
@@ -98,6 +103,7 @@ static void enter_rx(handler_arg_t arg) {
   phy_prepare_packet(&rx_packet);
   phy_rx_now(platform_phy, &rx_packet, rx_done_isr);
 }
+#endif
 
 void char_rx(handler_arg_t arg, uint8_t c)  {
   static union {
@@ -143,7 +149,7 @@ static void tx_done_isr(phy_status_t status)
 
 static void send_packet()
 {
-  time_t curtime;
+  //time_t curtime;
   phy_status_t phy_status;
 
   tx_done=0;
@@ -152,35 +158,51 @@ static void send_packet()
 
   // Prepare the packet and place
   phy_prepare_packet(&tx_packet);
-  getTime(&curtime);
+  //getTime(&curtime);
   // Create a payload
+#if 0
   tx_packet.length = snprintf((char*) tx_packet.data, PHY_MAX_TX_LENGTH,
 			      "%02x:%02x:%02x,%u,%09u.%09u", uid->uid8[9], uid->uid8[10],
 			      uid->uid8[11], tx_count, curtime.sec,curtime.nsec);
+#endif
 
+  tx_packet.length = snprintf((char*) tx_packet.data, PHY_MAX_TX_LENGTH,
+			      "%02x%02x,%u,**************", uid->uid8[10],
+			      uid->uid8[11], tx_count);
+  if (tx_packet.length>16)
+    tx_packet.length = 16;
+
+
+#if 0
   // Perform a CCA
   int32_t cca;
   phy_cca(platform_phy, &cca);
   //  uint32_t t = soft_timer_time() + soft_timer_ms_to_ticks(10);
   if (cca)
+#endif
     {
       // Channel is clear
       // Send
       phy_status = phy_tx_now(platform_phy, &tx_packet, tx_done_isr);
+#if 0
       if (PHY_SUCCESS == phy_status)
               printf("packet %d sent at %d.%09d\n", tx_count, curtime.sec,
                               curtime.nsec);
       else
               printf("Error %x while sending packet %d sent at %d.%09d\n",
                               phy_status, tx_count, curtime.sec, curtime.nsec);
+#endif
+      (void)phy_status;
       // Increment counter
       tx_count++;
     }
+#if 0
   else
     {
       log_debug("TX aborted, channel is busy\n");
       enter_rx(NULL);
     }
+#endif
 }
 
 int main() {

@@ -97,19 +97,29 @@ void PPShandler(handler_arg_t arg) {
 
   unsigned int timerCounter = timer2 + (timer4 * X);
 
+
+#define TIM2_BASE 0x40000000ul
+#define TIM4_BASE 0x40000800ul
+#define TIM_CNT_OFFSET 0x24
+
+#define TIM2_COUNTER (*((volatile uint16_t*)(TIM2_BASE+TIM_CNT_OFFSET)))
+#define TIM4_COUNTER (*((volatile uint16_t*)(TIM4_BASE+TIM_CNT_OFFSET)))
+
+  unsigned int timerCounter2 = TIM2_COUNTER + TIM4_COUNTER * X;
+
   // we recieve this interrupt each second from the GPS PPS
   // so we increment the number of seconds elapsed from the beginning
   seconds++;
   // and we reset the cycle counter
   //*DWT_CYCCNT = 0;
 
-  printf("%u %u\n", sysTickCounter-lastSysTickCounter,
-	 timerCounter -lastTimerCounter );
+  printf("%u %u %u\n", sysTickCounter-lastSysTickCounter,
+	 timerCounter -lastTimerCounter, timerCounter2-timerCounter );
   printf("timer4=%u\n", timer2);
-  printf("ccr4=%u ", *timer_get_CCRx(TIMcap, 3));
-  printf("sr="); printb(*timer_get_SR(TIMcap)); printf("\n");
-  printf("ccr4=%u ", *timer_get_CCRx(TIMcap, 3));
-  printf("sr="); printb(*timer_get_SR(TIMcap)); printf("\n");
+  //  printf("ccr4=%u ", *timer_get_CCRx(TIMcap, 3));
+  //printf("sr="); printb(*timer_get_SR(TIMcap)); printf("\n");
+  //printf("ccr4=%u ", *timer_get_CCRx(TIMcap, 3));
+  //printf("sr="); printb(*timer_get_SR(TIMcap)); printf("\n");
   lastSysTickCounter = sysTickCounter;
   lastTimerCounter = timerCounter;
   printf("DELTA=%u\n", timer2-*timer_get_CCRx(TIMcap, 3));

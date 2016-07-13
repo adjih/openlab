@@ -18,6 +18,8 @@
 #include "debug.h"
 #include "soft_timer.h"
 
+#include "phy_rf2xx/phy_rf2xx.h"
+
 // our STM32F103 runs at 72Mhz, 72000065 is an average measurement from a external GPS PPS source. 
 #define CYCLESPERSEC 72000065.0
 #define CYCLES2NS 1000000000.0/CYCLESPERSEC
@@ -60,22 +62,70 @@ void getTime(time_t * curtime){
   (*curtime).nsec=*DWT_CYCCNT*(double)CYCLES2NS;
 }
 
+
+
+#define TIMcap TIM_2
+#define X 16384
+
+//static unsigned int sysTickCounter = 0;
+
+void printb(uint32_t data)
+{
+  int i;
+  for (i=0;i<32;i++) {
+    int flag = ((data & (1<<(31-i))) != 0);
+    if (i%8 == 0  && i != 0)
+      printf(" ");
+    if (flag) printf("1");
+    else printf("0");
+  }
+}
+
+// TIMx_CCMR2::CC4S is bits 9:8 (RM0008 / DocID 13902 Rev 15 / p409/1128)
+#define AS_CC4S(x) ((x)<<8)
+
+// TIMx_CCMR2::IC4F is bits 15:12 (RM0008 / DocID 13902 Rev 15 / p410/1128)
+#define AS_IC4F(x) ((x)<<12)
+
+// TIMx_CCER::CC4P is bit 13 (RM0008 / DocID 13902 Rev 15 / p410/1128)
+#define AS_CC4P(x) ((x)<<13)
+
+// TIMx_CCER::CC4E is bit 12 (RM0008 / DocID 13902 Rev 15 / p410/1128)
+#define AS_CC4E(x) ((x)<<12)
+
+// TIMx_CCMR2::IC4F is bits 11:10 (RM0008 / DocID 13902 Rev 15 / p410/1128)
+#define AS_IC4PSC(x) ((x)<<10)
+
+#define TIM2_BASE 0x40000000ul
+#define TIM4_BASE 0x40000800ul
+#define TIM_CNT_OFFSET 0x24
+
+#define TIM2_COUNTER (*((volatile uint16_t*)(TIM2_BASE+TIM_CNT_OFFSET)))
+#define TIM4_COUNTER (*((volatile uint16_t*)(TIM4_BASE+TIM_CNT_OFFSET)))
+
+
 void PPShandler(handler_arg_t arg) {
+  unsigned int timer2 = TIM2_COUNTER;
+  unsigned int timer4 = TIM4_COUNTER;
+  unsigned int timerC = *timer_get_CCRx(TIMcap, 3);
+
   // we recieve this interrupt each second from the GPS PPS
   // so we increment the number of seconds elapsed from the beginning
   seconds++;
   // and we reset the cycle counter
   *DWT_CYCCNT = 0;
+  printf(".%u,%u,%u,%u\n", timer4, timer2,  timerC, seconds);
 }
 
 static void rx_done_isr(phy_status_t status) { 
+
   time_t rcv_time;
-  time_t delay;
+  //time_t delay;
   char snd_addr[20];
   char *pch;
   uint32_t snd_count;
-  uint32_t snd_sec;
-  uint32_t snd_nsec;
+  //uint32_t snd_sec;
+  //uint32_t snd_nsec;
   
   switch (status) {
     case PHY_SUCCESS:
@@ -87,14 +137,15 @@ static void rx_done_isr(phy_status_t status) {
       strcpy(snd_addr,pch);
       pch=strtok(NULL,",");
       snd_count=atoi(pch);
-      pch=strtok(NULL,".");
-      snd_sec=atoi(pch);
-      pch=strtok(NULL,",");
-      snd_nsec=atoi(pch);
+      //pch=strtok(NULL,".");
+      //snd_sec=atoi(pch);
+      //pch=strtok(NULL,",");
+      //snd_nsec=atoi(pch);
       //      printf("at %d.%09d, recieved packet %d sent from %s at %d.%09d with delta=%dns\n",rcv_time.sec,rcv_time.nsec,snd_addr,snd_sec,snd_nsec,rcv_time.nsec-snd_nsec);
-      delay.sec=rcv_time.sec-snd_sec;
-      delay.nsec=rcv_time.nsec-snd_nsec;
-      printf("%u,%u\n",snd_count,delay.sec*1000000000+delay.nsec);
+      //delay.sec=rcv_time.sec-snd_sec;
+      //delay.nsec=rcv_time.nsec-snd_nsec;
+      //printf("%u,%u\n",snd_count,delay.sec*1000000000+delay.nsec);
+      printf("+%u,%u,%u,%u\n", phy_last_timer_high, phy_last_timer_low, snd_count, seconds);
       break;
     default:
       // Bad packet
@@ -151,6 +202,22 @@ void char_rx(handler_arg_t arg, uint8_t c)  {
   }
 }
 
+
+void set_capture(typeof(TIM_2) _timer)
+{
+  volatile uint16_t* ccmr2 = timer_get_CCMRx(_timer, 2);
+  volatile uint16_t* ccer = timer_get_CCER(_timer);
+  printf("CCMR2="); printb(*ccmr2); printf("\n");
+  *ccmr2 = ((*ccmr2) & ~AS_CC4S(0x3)) | AS_CC4S(0x1); // IC4 is mapped on TI4
+  *ccmr2 = ((*ccmr2) & ~AS_IC4F(0xf)) | AS_IC4F(0x0); // no filtering in IC4
+  *ccer = ((*ccer) & ~AS_CC4P(1)) | AS_CC4P(0); // capture on rising edge of IC4
+  *ccmr2 = ((*ccmr2) & ~AS_IC4PSC(0x3)) | AS_IC4PSC(0); // no prescaler
+  *ccer = ((*ccer) & ~AS_CC4E(1)) | AS_CC4E(1); // capture enabled for IC4
+  printf("CCMR2="); printb(*ccmr2); printf("\n");
+  printf("CCER="); printb(*ccer); printf("\n");
+  printf("DIER="); printb(*timer_get_DIER(_timer)); printf("\n");
+}
+
 int main() {
   platform_init();
   soft_timer_init();
@@ -160,12 +227,54 @@ int main() {
   
   uart_set_rx_handler(uart_print,  char_rx,NULL);
 
+
+
+  //..................................................
+  timer_enable(TIM_2);
+  timer_select_internal_clock(TIM_2,
+       (rcc_sysclk_get_clock_frequency(RCC_SYSCLK_CLOCK_PCLK1_TIM)/1000000)-1);
+  // rcc_sysclk_get_clock_frequency(RCC_SYSCLK_CLOCK_PCLK1_TIM));
+  timer_select_internal_clock(TIM_2, 0);
+  //(rcc_sysclk_get_clock_frequency(RCC_SYSCLK_CLOCK_PCLK1_TIM)/1000000)-1);
+  timer_start(TIM_2, X-1, NULL, NULL);
+
+  // config TRGO
+  *timer_get_SMCR(TIM_2) |= TIMER_SMCR__MSM;
+  #define TIM_TRGOSource_Update              ((uint16_t)0x0020)
+  *timer_get_CR2(TIM_2) |= TIM_TRGOSource_Update;
+
+  //....................
+  timer_enable(TIM_4);
+  *timer_get_SMCR(TIM_4) = TIMER_SMCR__SMS_EXTERNAL_CLOCK_MODE_1;
+
+  // Input trigger
+  uint16_t tmpsmcr = 0;
+  tmpsmcr = *timer_get_SMCR(TIM_4);
+  tmpsmcr &= (uint16_t)(~((uint16_t)TIMER_SMCR__TS_MASK));
+  #define TIM_TS_ITR1      ((uint16_t)0x0010)
+  tmpsmcr |= TIM_TS_ITR1;
+  *timer_get_SMCR(TIM_4) = tmpsmcr;
+
+  // Enable CR1 ARPE
+  *timer_get_CR1(TIM_4) |= TIMER_CR1__ARPE;
+
+  // Enable the counter
+  *timer_get_CR1(TIM_4) |= TIMER_CR1__CEN;
+  //....................
+
+  *timer_get_CNT(TIM_2) = 0;
+  *timer_get_CNT(TIM_4) = 0;
+  //..................................................
+
+  set_capture(TIMcap);
+
+
 #if 0
   while(A8comState!=TIMEOK){
     asm volatile ("nop");
   }
 #endif
-  printf("Got time from A8 : %us\n",
+  printf("Got time from A8 : %us\n",seconds);
 
   // Init cycle counter
   *SCB_DEMCR = *SCB_DEMCR | 0x01000000;

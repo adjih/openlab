@@ -82,4 +82,9 @@ typedef struct
 void phy_rf2xx_init(phy_rf2xx_t *phy, rf2xx_t radio, openlab_timer_t timer,
                     timer_channel_t channel);
 
+/* hacks */
+volatile unsigned int phy_last_timer_low;
+volatile unsigned int phy_last_timer_high;
+
+
 #endif /* PHY_RF2XX_H_ */
